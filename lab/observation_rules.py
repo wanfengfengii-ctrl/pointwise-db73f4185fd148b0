@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from .gaussian_model import finite_number
+from .regions import normalize_region
 
 def identity(value):
     if not isinstance(value,str) or not value.strip():
@@ -26,12 +27,19 @@ class ObservationRow:
     cohort_id: str
     sample_id: str
     rev: int
-    x: tuple
     count: int
+    x: tuple = None
+    region: dict = None
 
     def payload(self):
-        return {"cohort_id":self.cohort_id,"sample_id":self.sample_id,"rev":self.rev,
-                "x":[c.payload() for c in self.x],"count":self.count}
+        result = {"cohort_id":self.cohort_id,"sample_id":self.sample_id,"rev":self.rev,
+                  "count":self.count}
+        if self.x is not None:
+            result["x"] = [constraint.payload() for constraint in self.x]
+        else:
+            result["region"] = {key:[list(plane) for plane in planes]
+                                for key,planes in self.region.items()}
+        return result
 
 def normalize_constraint(raw):
     if not isinstance(raw,dict):
@@ -47,14 +55,23 @@ def normalize_constraint(raw):
     return Constraint(kind,**values)
 
 def normalize_row(raw):
-    required = {"cohort_id","sample_id","rev","x","count"}
-    if not isinstance(raw,dict) or set(raw) != required:
-        raise ValueError("observation fields")
-    if not isinstance(raw["x"],(list,tuple)) or len(raw["x"]) != 2:
-        raise ValueError("two ordered constraints required")
-    return ObservationRow(identity(raw["cohort_id"]),identity(raw["sample_id"]),
-                          positive_integer(raw["rev"]),tuple(normalize_constraint(c) for c in raw["x"]),
-                          positive_integer(raw["count"]))
+    base = {"cohort_id","sample_id","rev","count"}
+    if not isinstance(raw,dict) or set(raw) not in (base | {"x"},base | {"region"}):
+        raise ValueError("observation fields: exactly one of x or region required")
+    if "x" in raw:
+        x = raw["x"]
+        if not isinstance(x,(list,tuple)) or len(x) != 2:
+            raise ValueError("two ordered constraints required")
+        constraints = tuple(normalize_constraint(c) for c in x)
+        observation = ObservationRow(identity(raw["cohort_id"]),identity(raw["sample_id"]),
+                                     positive_integer(raw["rev"]),positive_integer(raw["count"]),
+                                     x=constraints)
+    else:
+        region = normalize_region(raw["region"])
+        observation = ObservationRow(identity(raw["cohort_id"]),identity(raw["sample_id"]),
+                                     positive_integer(raw["rev"]),positive_integer(raw["count"]),
+                                     region=region)
+    return observation
 
 def normalize_batch(rows):
     if not isinstance(rows,(list,tuple)) or not rows:

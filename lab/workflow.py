@@ -10,6 +10,7 @@ from .tasks import TaskService
 from .results import ResultArchive
 from .fitting import FitService
 from .risk import RiskService
+from .conditional_risk import ConditionalRiskService
 from .evidence import EvidenceExporter
 
 class Workflow:
@@ -21,6 +22,7 @@ class Workflow:
         self.archive = ResultArchive(self.storage)
         self.fitting = FitService(self.tasks,self.archive,self.engine)
         self.risks = RiskService(self.archive,self.engine)
+        self.conditional = ConditionalRiskService(self.archive,self.tasks,self.engine)
         self.evidence = EvidenceExporter(self.archive,self.tasks,self.storage)
 
     def put_batch(self,batch_id,rows):
@@ -34,6 +36,9 @@ class Workflow:
 
     def risk(self,fit_id,thresholds):
         return self.risks.risk(fit_id,thresholds)
+
+    def conditional_risk(self,fit_id,sample_key,thresholds):
+        return self.conditional.conditional_risk(fit_id,sample_key,thresholds)
 
     def read_result(self,result_id):
         return self.archive.read_result(result_id)

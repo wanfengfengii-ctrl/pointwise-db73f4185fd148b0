@@ -1,8 +1,27 @@
 import math
 from dataclasses import dataclass
 from .gaussian_model import GaussianParameters
-from .observation_likelihood import weighted_log_likelihood
+from .observation_likelihood import weighted_log_likelihood, observation_log_likelihood
 from .numerics import NumericalFailure
+from .regions import representative_point
+
+
+def _pattern_key(row):
+    if "region" in row:
+        return "region:"+str(row["region"])
+    return "x:"+str(row["x"])
+
+
+def _row_pairs(row):
+    if "region" in row:
+        x, y = representative_point(row["region"])
+        return (x, y), row["count"]
+    values = []
+    for c in row["x"]:
+        values.append(c.get("value",c.get("upper",c.get("lower"))))
+        if c["kind"] == "interval":
+            values[-1] = (c["lower"]+c["upper"])/2
+    return tuple(values), row["count"]
 
 @dataclass(frozen=True)
 class FitCandidate:
@@ -22,14 +41,7 @@ def _decode(point):
     return GaussianParameters((m,n),((a,b),(b,d)))
 
 def _initial(rows):
-    pairs = []
-    for row in rows:
-        values = []
-        for c in row["x"]:
-            values.append(c.get("value",c.get("upper",c.get("lower"))))
-            if c["kind"] == "interval":
-                values[-1] = (c["lower"]+c["upper"])/2
-        pairs.append((values,row["count"]))
+    pairs = [_row_pairs(row) for row in rows]
     total = sum(n for _,n in pairs)
     mu = [sum(p[j]*n for p,n in pairs)/total for j in range(2)]
     cov = [[sum(n*(p[i]-mu[i])*(p[j]-mu[j]) for p,n in pairs)/total
@@ -56,12 +68,12 @@ def solve_joint_mle(rows, engine):
     engine.guard("fit")
     if not rows:
         raise NumericalFailure("empty analysis")
-    patterns = {(str(r["x"])) for r in rows}
+    patterns = {_pattern_key(r) for r in rows}
     if len(patterns) > 40:
         raise NumericalFailure("at most 40 observation patterns")
     total = sum(r["count"] for r in rows)
     start = _initial(rows)
-    if all(c["kind"] == "exact" for r in rows for c in r["x"]):
+    if all("x" in r and all(c["kind"] == "exact" for c in r["x"]) for r in rows):
         mu = [sum(r["count"]*r["x"][j]["value"] for r in rows)/total for j in range(2)]
         covariance = [[sum(r["count"]*(r["x"][i]["value"]-mu[i])*(r["x"][j]["value"]-mu[j])
                        for r in rows)/total for j in range(2)] for i in range(2)]
@@ -72,7 +84,10 @@ def solve_joint_mle(rows, engine):
         return validate_fit_candidate(FitCandidate(model,weighted_log_likelihood(rows,model,engine),
             {"method":"exact_mle","parameter_error_estimate":0.,"converged":True}))
     def objective(point):
-        return -weighted_log_likelihood(rows,_decode(point),engine)/total
+        try:
+            return -weighted_log_likelihood(rows,_decode(point),engine)/total
+        except NumericalFailure:
+            return math.inf
     result = engine.minimize(objective,_encode(start))
     if not result.converged:
         raise NumericalFailure("optimizer did not converge")
@@ -108,7 +123,13 @@ def solve_joint_mle(rows, engine):
                 lower[i][j] = value/lower[j][j]
     model_scale = max(1.,*(abs(v) for row in model.covariance for v in row))
     error = max(correction, inverse_norm*2e-11)*8*model_scale
-    candidate = FitCandidate(model,-total*objective(point),
+    # Publication-time check: every affine region must retain at least the
+    # guaranteed truncation probability in the optimum neighborhood.
+    for row in rows:
+        if "region" in row:
+            observation_log_likelihood(row,model,engine,enforce_truncation=True)
+    candidate = FitCandidate(model,weighted_log_likelihood(rows,model,engine,
+                                                           enforce_truncation=True),
         {"method":"joint_likelihood","converged":True,
          "parameter_error_estimate":error,"score_norm":max(map(abs,gradient)),
          "inverse_hessian_norm":inverse_norm,"iterations":result.iterations})

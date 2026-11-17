@@ -1,6 +1,7 @@
 import math
 from .gaussian_model import joint_log_density, conditional_normal, normal_interval_probability, rectangle_probability, LOG2PI
 from .numerics import NumericalFailure
+from .regions import region_log_likelihood
 
 def bounds(constraint):
     kind = constraint["kind"]
@@ -12,7 +13,9 @@ def bounds(constraint):
         return constraint["lower"],constraint["upper"]
     return constraint["value"],constraint["value"]
 
-def observation_log_likelihood(row, model, engine):
+def observation_log_likelihood(row, model, engine, enforce_truncation=False):
+    if "region" in row:
+        return region_log_likelihood(row["region"],model,engine,enforce_truncation)
     constraints = row["x"]
     exact = [j for j,c in enumerate(constraints) if c["kind"] == "exact"]
     if len(exact) == 2:
@@ -32,5 +35,6 @@ def observation_log_likelihood(row, model, engine):
         raise NumericalFailure("observation probability below numerical support")
     return marginal+math.log(probability)
 
-def weighted_log_likelihood(rows, model, engine):
-    return math.fsum(row["count"]*observation_log_likelihood(row,model,engine) for row in rows)
+def weighted_log_likelihood(rows, model, engine, enforce_truncation=False):
+    return math.fsum(row["count"]*observation_log_likelihood(row,model,engine,enforce_truncation)
+                     for row in rows)

@@ -1,12 +1,15 @@
-from .codecs import encode_payload, decode_payload, canonical_digest, IntegrityError
+from .codecs import encode_payload, decode_payload, canonical_digest, clone_payload, IntegrityError
 from .gaussian_model import GaussianParameters, finite_number
 
 CONTRACT = "qingxi-bvn-1"
 
-def request_key(kind,parent_id,thresholds=None):
+def request_key(kind,parent_id,thresholds=None,sample_key=None):
     request = {"contract":CONTRACT,"kind":kind,"parent_id":parent_id}
     if kind == "report":
         request["thresholds"] = list(thresholds)
+    elif kind == "conditional_report":
+        request["thresholds"] = list(thresholds)
+        request["sample_key"] = list(sample_key)
     return canonical_digest(request)
 
 class ResultArchive:
@@ -28,10 +31,18 @@ class ResultArchive:
     def find_report(self,fit_id,thresholds):
         return self._find(request_key("report",fit_id,thresholds))
 
+    def find_conditional_report(self,fit_id,sample_key,thresholds):
+        return self._find(request_key("conditional_report",fit_id,thresholds,sample_key))
+
     def _key(self,payload):
-        if payload["kind"] == "fit":
+        kind = payload["kind"]
+        if kind == "fit":
             return request_key("fit",payload["task_id"])
-        return request_key("report",payload["fit_id"],payload["thresholds"])
+        if kind == "report":
+            return request_key("report",payload["fit_id"],payload["thresholds"])
+        sample = payload["sample"]
+        return request_key("conditional_report",payload["fit_id"],payload["thresholds"],
+                           [sample["cohort_id"],sample["sample_id"]])
 
     def _publish(self,payload,parent_kind,parent_id):
         key = self._key(payload)
@@ -63,7 +74,7 @@ class ResultArchive:
         return self._publish(payload,"task",payload["task_id"])
 
     def publish_report(self,payload):
-        if payload.get("kind") != "report":
+        if payload.get("kind") not in ("report","conditional_report"):
             raise ValueError("report payload required")
         return self._publish(payload,"fit",payload["fit_id"])
 
@@ -74,7 +85,8 @@ class ResultArchive:
         result = decode_payload(stored[1])
         try:
             kind = result["kind"]
-            if kind not in ("fit","report") or stored[0] != kind or result["contract"] != CONTRACT:
+            if kind not in ("fit","report","conditional_report") or stored[0] != kind \
+                    or result["contract"] != CONTRACT:
                 raise ValueError("result kind or contract")
             key = self._key(result)
             if result["result_id"] != result_id or result_id != kind+":"+key:
@@ -98,6 +110,20 @@ class ResultArchive:
                 if not 0 <= probability <= 1:
                     raise ValueError("probability range")
                 parent = ("fit",result["fit_id"])
+                if kind == "conditional_report":
+                    denominator = finite_number(result["denominator"])
+                    if denominator <= 0:
+                        raise ValueError("conditional denominator must be positive")
+                    sample = result["sample"]
+                    if not isinstance(sample,dict) or ("x" not in sample and "region" not in sample):
+                        raise ValueError("conditional sample row required")
+                    for field in ("cohort_id","sample_id","rev","count"):
+                        if field not in sample:
+                            raise ValueError("conditional sample identity required")
+                parent_fit = self.read_result(result["fit_id"])
+                if parent_fit["kind"] != "fit" \
+                        or canonical_digest(parent_fit) != result["model_digest"]:
+                    raise ValueError("report parent model digest mismatch")
             actual = self.storage.fetch_one("SELECT parent_kind,parent_id FROM parents WHERE result_id=?",(result_id,))
             if actual != parent:
                 raise ValueError("result parent link")
